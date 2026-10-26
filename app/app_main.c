@@ -16,6 +16,7 @@
 #include <stdio.h>
 
 #include "app_can.h"
+#include "app_led.h"
 #include "app_config.h"
 #include "dm_motor.h"
 #include "usbd_cdc_if.h"
@@ -27,6 +28,7 @@ static uint32_t s_skipped_ticks;
 void app_init(void)
 {
     app_can_init();
+    app_led_init();
     s_ms = 0;
     s_served_ms = 0;
     s_skipped_ticks = 0;
@@ -116,6 +118,8 @@ void app_loop(void)
     app_can_poll_errors();
 
     const uint32_t now = s_ms;
+    app_led_update(now);
+
     if (now == s_served_ms) {
         return;
     }
