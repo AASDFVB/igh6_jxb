@@ -71,7 +71,7 @@ project toolchain STM32CubeIDE
 project generate
 exit
 ```
-注意 `.ioc` 里两个非默认项是必需的：`RCC.PLLSourceVirtual=RCC_PLLSOURCE_HSE`（缺了会退回内部 HSI，CAN 波特率全错）和 `PH0-OSC_IN/PH1-OSC_OUT` 振荡器引脚（缺了 HSE 会是 OFF）。
+注意 `.ioc` 里有两个容易丢的项：**PH0-OSC_IN / PH1-OSC_OUT 振荡器引脚**（丢了 HSE 会是 `RCC_HSE_OFF`，PLL 锁不上）和 **`USB_DEVICE` 的虚拟引脚 `VP_USB_DEVICE_VS_USB_DEVICE_CDC_FS`**（丢了 CubeMX 会静默不生成 `usbd_*` 中间件，只剩 PCD）。手写 `.ioc` 时若 PLL 源没接上，还要补 `RCC.PLLSourceVirtual=RCC_PLLSOURCE_HSE`，否则会退回内部 HSI、CAN 波特率全错——生成一次后 CubeMX 会把该键规范化掉，属正常。
 
 ## 故障排查
 
