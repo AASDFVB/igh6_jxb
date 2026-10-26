@@ -44,6 +44,9 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
   USE_HAL_DRIVER
   STM32F407xx)
 
+# 让产物叫 igh6_jxb.elf（cortex-debug / openocd 都按这个后缀找）
+set_target_properties(${PROJECT_NAME} PROPERTIES SUFFIX ".elf")
+
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_OBJCOPY} -O ihex   $<TARGET_FILE:${PROJECT_NAME}> ${PROJECT_NAME}.hex
   COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${PROJECT_NAME}> ${PROJECT_NAME}.bin
