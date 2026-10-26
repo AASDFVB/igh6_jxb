@@ -1,0 +1,41 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug (ST-Link + OpenOCD)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "servertype": "openocd",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/Debug/igh6_jxb.elf",
+      "device": "STM32F407IG",
+      "configFiles": [
+        "interface/stlink.cfg",
+        "target/stm32f4x.cfg"
+      ],
+      "openOCDLaunchCommands": [
+        "adapter speed 2000"
+      ],
+      "serverpath": "${env:HOME}/.local/opt/xpack-openocd-0.12.0-7/bin/openocd",
+      "armToolchainPath": "${env:HOME}/.local/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin",
+      "runToEntryPoint": "main",
+      "preLaunchTask": "build",
+      "showDevDebugOutput": "none"
+    },
+    {
+      "name": "Attach (ST-Link + OpenOCD)",
+      "type": "cortex-debug",
+      "request": "attach",
+      "servertype": "openocd",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/Debug/igh6_jxb.elf",
+      "device": "STM32F407IG",
+      "configFiles": [
+        "interface/stlink.cfg",
+        "target/stm32f4x.cfg"
+      ],
+      "serverpath": "${env:HOME}/.local/opt/xpack-openocd-0.12.0-7/bin/openocd",
+      "armToolchainPath": "${env:HOME}/.local/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin"
+    }
+  ]
+}
