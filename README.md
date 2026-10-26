@@ -17,11 +17,12 @@ STM32F407IGH6（大疆 RoboMaster C 板）用双路 CAN 以 1 kHz 轮询 6 个�
 ## 构建 / 烧录
 
 ```bash
-cmake --preset Debug          # 或 VSCode 里直接跑 build 任务
-cmake --build build/Debug -j
+make GCC_PATH=$HOME/.local/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin -j
 ```
 
 VSCode：直接 **F5**（Cortex-Debug，ST-Link + OpenOCD，自动先执行 build）；只烧录用 **Terminal → Run Task → flash**。
+
+`Makefile` 是 CubeMX 生成的，`app/*.c` 那几行由 `tools/patch_makefile.py` 补进去（见下）。
 
 工具链全在 `~/.local/opt`，不需要 sudo：
 `xpack-arm-none-eabi-gcc-15.2.1-1.1`、`xpack-openocd-0.12.0-7`。
@@ -48,6 +49,10 @@ t=12 rx=1000/1000/1000/1000/1000/1000 ovf=0 un=0 drop=0
 ## 目录
 
 ```
+Makefile    CubeMX 生成（每次重新生成会被整份覆盖，别手改）
+tools/
+  generate.sh         CubeMX 无 UI 生成 + 补 Makefile（一条命令）
+  patch_makefile.py   把 app/*.c 和 -Iapp 补回 Makefile（幂等）
 app/        业务代码（不在 CubeMX 生成范围内）
   dm_motor.*    MIT 帧编解码，纯 C，可在 PC 上测
   app_can.*     双总线滤波器、使能/保持帧、反馈分发
@@ -60,17 +65,11 @@ Src/ Inc/    CubeMX 生成（USER CODE 段可以手改，重新生成会保留�
 ## 重新生成 CubeMX 代码
 
 ```bash
-~/.local/opt/stm32cubemx/MX/STM32CubeMX -q gen.txt   # gen.txt 见下
+bash tools/generate.sh          # CubeMX 生成 + 补 Makefile，一步到位
+# 或 VSCode：Terminal → Run Task → generate (CubeMX + patch)
 ```
-`gen.txt`：
-```
-config load <本目录>/igh6_jxb.ioc
-project name igh6_jxb
-project path <本目录>
-project toolchain STM32CubeIDE
-project generate
-exit
-```
+
+**第二步不能省**：CubeMX 重写 Makefile 时不认识 `app/`，不补回去就是"编译通过、烧进去还是旧固件"。
 注意 `.ioc` 里有两个容易丢的项：**PH0-OSC_IN / PH1-OSC_OUT 振荡器引脚**（丢了 HSE 会是 `RCC_HSE_OFF`，PLL 锁不上）和 **`USB_DEVICE` 的虚拟引脚 `VP_USB_DEVICE_VS_USB_DEVICE_CDC_FS`**（丢了 CubeMX 会静默不生成 `usbd_*` 中间件，只剩 PCD）。手写 `.ioc` 时若 PLL 源没接上，还要补 `RCC.PLLSourceVirtual=RCC_PLLSOURCE_HSE`，否则会退回内部 HSI、CAN 波特率全错——生成一次后 CubeMX 会把该键规范化掉，属正常。
 
 ## 故障排查

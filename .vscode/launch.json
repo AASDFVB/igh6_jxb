@@ -7,7 +7,7 @@
       "request": "launch",
       "servertype": "openocd",
       "cwd": "${workspaceFolder}",
-      "executable": "${workspaceFolder}/build/Debug/igh6_jxb.elf",
+      "executable": "${workspaceFolder}/build/igh6_jxb.elf",
       "device": "STM32F407IG",
       "configFiles": [
         "interface/stlink.cfg",
@@ -28,7 +28,7 @@
       "request": "attach",
       "servertype": "openocd",
       "cwd": "${workspaceFolder}",
-      "executable": "${workspaceFolder}/build/Debug/igh6_jxb.elf",
+      "executable": "${workspaceFolder}/build/igh6_jxb.elf",
       "device": "STM32F407IG",
       "configFiles": [
         "interface/stlink.cfg",

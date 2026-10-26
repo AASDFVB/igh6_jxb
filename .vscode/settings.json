@@ -1,12 +1,9 @@
 {
-  "cmake.useCMakePresets": "always",
-  "cmake.configureOnOpen": true,
-  "cmake.buildDirectory": "${workspaceFolder}/build/${presetName}",
-  "C_Cpp.default.compileCommands": "${workspaceFolder}/build/Debug/compile_commands.json",
   "C_Cpp.intelliSenseEngine": "default",
   "files.associations": {
     "*.h": "c",
-    "*.ioc": "ini"
+    "*.ioc": "ini",
+    "Makefile": "makefile"
   },
   "search.exclude": {
     "build": true,
