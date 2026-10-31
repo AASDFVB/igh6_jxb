@@ -1,0 +1,28 @@
+# 6 轴 robotarm 零点标定结果
+#   q_joint = dir * q_encoder + offset      (rad)
+#   由 igh6_jxb/host/zero_offsets.py 经 USB CDC 关节流生成
+#   同步到 ros2_gong 需手工拷贝（本工具不写那个仓库）
+
+offsets:
+  J0  : -5.244000
+  J1  : +0.193200
+  J2  : -0.549000
+  J3  : -0.328000
+  J4  : -1.869000
+  J5  : -0.813000
+
+directions:
+  J0  : +1
+  J1  : -1
+  J2  : +1
+  J3  : +1
+  J4  : +1
+  J5  : +1
+
+can_ids:
+  J0  : 1
+  J1  : 2
+  J2  : 3
+  J3  : 4
+  J4  : 5
+  J5  : 6
