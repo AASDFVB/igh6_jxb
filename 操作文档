@@ -1,3 +1,53 @@
+code ~/Desktop/igh6_jxb        # 终端
 cd ~/Desktop/igh6_jxb
 make GCC_PATH=$HOME/.local/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin -j
 ~/.local/opt/xpack-openocd-0.12.0-7/bin/openocd -f interface/stlink.cfg -f target/stm32f4x.cfg -c "program build/igh6_jxb.elf verify reset exit"
+bash tools/flash.sh
+
+python3 -m serial.tools.miniterm /dev/ttyACM1 115200 查看电机状态
+开rviz
+cd ~/Desktop/igh6_jxb
+source /opt/ros/jazzy/setup.bash
+source ~/Desktop/ros2_gong/install/setup.bash     # 为了 robotarm 的 URDF
+ros2 launch host/display.launch.py
+
+C 板现在是"电机总线 + 动力学模型 + 零点 + 力矩决策"四件事都在里面，PC 只负责看（RViz）和标定。
+
+代码块
+
+
+        ┌─────────────────── C 板 (STM32F407, 31.7 KB flash / 10.5 KB RAM) ───────────────────┐
+        │                                                                                       │
+ 6×DM4310 ──CAN1/CAN2──▶ app_can.c    1 kHz 轮询、滤波、使能重试、反馈分发、bus-off 处理        │
+        │                app_main.c    1 kHz 时序 + 100 Hz 重力补偿 + 三路串口输出                │
+        │                gravity.c     静态重力矩 τ = −Σ axis·((p_k−p_i)×m_k·g)                  │
+        │                gravity_model.h   ← 从 URDF 生成的：质量/质心/轴/原点 + dir/offset/ID     │
+        │                gcomp_params.h    ← 你手改的：gains / kp / kd / limit / ramp / active    │
+        │                app_led.c     TIM5 呼吸灯                                                │
+        └───────────────────────────────────┬───────────────────────────────────────────────────┘
+                                            │ USB CDC
+                          ┌─────────────────┼──────────────────┐
+                    1 Hz 中文报告      50 Hz J 行          10 Hz G 行
+                    （人看）           （关节角）          （力矩，对拍用）
+                                            │
+                                     PC: host/ 工具
+                              rviz_joint_states.py → /joint_states → RViz
+                              zero_offsets.py      → 改 host/joint_offsets.yaml
+文件	里子
+gravity_model.h	从 URDF 生成的常量：6 个关节的原点旋转/平移、轴、子连杆质量与质心，外加 GM_DIR / GM_OFFSET / GM_CAN_ID
+gcomp_params.h	你手改的：GCOMP_GAIN/KP/KD/ACTIVE 四张表 + 四个全局量
+gravity.c	前向运动学 + 重力矩，浮点，Cortex-M4F 硬件 FPU
+app_can.c	CAN1/CAN2 滤波器、1 kHz 收发、使能/保持帧、反馈分发、bus-off 限速恢复
+app_main.c	100 ms 清错 → 补使能到六颗全使能 → 100 Hz 算重力矩、4 s 渐入、限幅 → 1 kHz 发 MIT 帧；三路串口输出
+dm_motor.c	MIT 帧编解码
+app_led.c	TIM5 三色呼吸灯
+app_config.h	电机表（ID+总线）、使能/保持时序、上报周期、看门狗、调试开关
+
+
+
+# 1. 插板子 + ST-Link
+bash tools/flash.sh
+
+# 2. 开 viser
+python3 host/viser_bridge.py
+# 浏览器打开 http://127.0.0.1:8081

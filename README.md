@@ -1,6 +1,10 @@
 # igh6_jxb
 
-STM32F407IGH6（大疆 RoboMaster C 板）用双路 CAN 以 1 kHz 轮询 6 个达妙 DM4310，解析 MIT 模式反馈帧，并经 USB CDC 打印。这是 **bring-up 验证件**：只发保持帧、只读反馈，不做闭环控制。
+STM32F407IGH6（大疆 RoboMaster C 板）用双路 CAN 以 1 kHz 轮询 6 个达妙 DM4310，解析 MIT 模式反馈帧，经 USB CDC 输出；并**在板上实时算静态重力矩**，作为 MIT 帧的 `t_ff` 下发，让手臂"被扶住"。
+
+- 反馈与使能：只读 + 保持帧（`kp=kd=0`）
+- 出力：重力补偿（100 Hz 重算、4 秒渐入、单轴限幅 6 N·m），模型从 ros2_gong 的 URDF 生成
+- 不做：目标位置跟踪、轨迹、闭环增益整定
 
 ## 接线
 
@@ -27,19 +31,30 @@ VSCode：直接 **F5**（Cortex-Debug，ST-Link + OpenOCD，自动先执行 buil
 工具链全在 `~/.local/opt`，不需要 sudo：
 `xpack-arm-none-eabi-gcc-15.2.1-1.1`、`xpack-openocd-0.12.0-7`。
 
+## 看串口
+
+```bash
+stty -F /dev/ttyACM0 115200 raw -echo   # 必须 raw，否则 \r\n 会被终端再转成空行
+cat /dev/ttyACM0
+```
+
+或交互式：`python3 -m serial.tools.miniterm /dev/ttyACM0 115200`（`Ctrl-]` 退出）。
+udev 规则 `99-stm32cdc.rules` 已把设备设成 0666，不需要 sudo。
+
 ## 预期输出
 
-上电 ~150 ms 后开始轮询，每秒一行汇总 + 6 行电机状态：
+上电约 200 ms 后开始轮询，每秒一行汇总 + 6 行电机状态（UTF-8）：
 
 ```
-t=12 rx=1000/1000/1000/1000/1000/1000 ovf=0 un=0 drop=0
-[1] e=1 p=+0000 v=+0000 t=+0000 32/30
+第12秒 收帧=1000/1000/1000/1000/1000/1000 溢出=0 未匹配=0 发送失败=0 总线关闭=0/0 丢拍=0
+[1] 状态=已使能 位置=-1338mrad 速度=+7mrad/s 力矩=-7mN·m 温度=32/30℃
 ```
 
-- `rx` 每秒每机应收 **1000** 帧（1 kHz 轮询，一问一答）；明显低于 1000 = 丢帧
-- `e` = 错误码：`1` 已使能、`0` 未使能、`8/9` 过压/欠压、`A` 过流、`B/C` 过温、`D` 通信丢失、`E` 过载
-- `p` 单位 mrad，`v` 0.01 rad/s，`t` mN·m；`32/30` = MOS/转子温度 ℃
-- `ovf` FIFO 溢出、`un` 无法归属的帧、`drop` 命令帧未发出
+- `收帧` 每秒每机应收 **1000** 帧（1 kHz 轮询，一问一答）；明显低于 1000 = 丢帧
+- `状态`：`已使能` / `未使能` / `过压` / `欠压` / `过流` / `MOS过温` / `转子过温` / `通信丢失` / `过载`
+- `位置` mrad、`速度` mrad/s、`力矩` mN·m、`温度` = MOS/转子 ℃
+- `溢出` FIFO 溢出、`未匹配` 无法归属的帧、`发送失败` 命令帧没发出去、
+  `总线关闭` 进入次数/恢复次数、`丢拍` 主循环错过的毫秒
 
 ## 指示灯
 
@@ -47,8 +62,59 @@ t=12 rx=1000/1000/1000/1000/1000/1000 ovf=0 un=0 drop=0
 
 ## 改参数
 
-`app/app_config.h`：电机表（ID + 挂在哪条总线）、使能延时、保持帧起始时间、上报周期。
+`app/gcomp_params.h`：**重力补偿的全部可调项**（手改）——`GCOMP_GAIN` / `GCOMP_KP` /
+`GCOMP_KD` 逐轴一行，外加 `GCOMP_SCALE` / `GCOMP_LIMIT_NM` / `GCOMP_RAMP_MS` /
+`GCOMP_PERIOD_MS` / `GCOMP_ACTIVE`。语义与 ros2_gong 的 `gravity_comp.yaml` 一致。
+改完 `bash tools/flash.sh`。
+
+`app/app_config.h`：电机表（ID + 挂在哪条总线）、使能延时、保持帧起始时间、上报周期、关节流周期、重力补偿开关/看门狗。
 `app/dm_motor.h`：缩放常数（4310 为 12.5 rad / 30 rad/s / 10 N·m / kp 500 / kd 5）。
+
+## 重力补偿
+
+固件用静态重力矩抵消手臂自重，模型与 ros2_gong 的 Pinocchio 实现同源：
+
+```
+τ_i = − Σ_{k≥i} axis_i · ( (p_k − p_i) × m_k·g )      // 关节侧
+t_ff = dir · τ_i · gain_i · scale · ramp              // 电机侧，MIT 帧的 t_ff
+```
+
+- 模型参数**从 URDF 生成**，不手抄：`python3 tools/gen_gravity_model.py`
+  → `app/gravity_model.h`（含 `dir`/`offset`）+ `test/gravity_vectors.h`
+- 主机侧对拍：`cc app/gravity.c test/test_gravity.c -Iapp -lm && ./a.out`（实测 3e-7 N·m）
+- 实机对拍：`APP_DEBUG_TORQUE=1` 时 10 Hz 打 `G <ms> <t1..t6>`（mN·m），与 Pinocchio 比
+- 安全：六轴全部「已使能」且反馈未超时 100 ms 才出力；条件破坏立刻零力矩并重新渐入
+- **重新定零点后必须重新生成并重烧**——`dir`/`offset` 已经编进固件
+
+## 上电回初始位
+
+`app/home_params.h` 控制：六轴就绪后等 `HOME_DELAY_MS`，用 `HOME_MOVE_MS` 从当前姿态
+**smoothstep 插值**到 `HOME_TARGET`（默认全 0 = URDF 初始位，也就是标定零点时的立姿），
+之后用 `HOME_KP`/`HOME_KD` 停在那儿。
+
+- 目标角是 **URDF 关节角**（rad），不是电机侧；`HOME_ENABLE 0` 可整体关掉
+- 中途掉使能/丢帧 → 立刻放弃回位，退回纯重力补偿（不会再硬顶）
+- 收尾保持靠 `HOME_KP`（默认 30），想回到"推哪停哪"就把它改小或关掉回位
+
+⚠️ 开了这个，**上电后手臂会自己动**。慢一点（`HOME_MOVE_MS` 调大）比快安全。
+
+## 上位机
+
+除了 1 Hz 的中文报告，固件每 20 ms（50 Hz）还打一行机器可读的关节流：
+
+```
+J <t_ms> <p1> <p2> <p3> <p4> <p5> <p6>      ← mrad，顺序 = 电机 ID 1..6
+```
+
+`host/` 里是消费它的脚本：RViz 实时同步、用串口流重新定零点、viser 双向遥操作。见 [host/README.md](host/README.md)。
+
+串口也是双向的，固件按行接收：
+
+```
+P q0 q1 q2 q3 q4 q5     关节角目标（rad），固件内按 0.8 rad/s 限速追过去
+M 0 | M 1               放开（只剩重力补偿）/ 位置保持
+K kp kd                 运行时改位置刚度、阻尼
+```
 
 ## 目录
 
@@ -57,10 +123,16 @@ Makefile    CubeMX 生成（每次重新生成会被整份覆盖，别手改）
 tools/
   generate.sh         CubeMX 无 UI 生成 + 补 Makefile（一条命令）
   patch_makefile.py   把 app/*.c 和 -Iapp 补回 Makefile（幂等）
+  flash.sh            编译 + 烧录 + 校验 + 复位
 app/        业务代码（不在 CubeMX 生成范围内）
   dm_motor.*    MIT 帧编解码，纯 C，可在 PC 上测
   app_can.*     双总线滤波器、使能/保持帧、反馈分发
-  app_main.*    1 kHz 时序、1 Hz USB 上报
+  app_main.*    1 kHz 时序、1 Hz 报告 + 50 Hz 关节流
+host/       上位机工具（Python，只读串口）
+  igh6_serial.py       协议：找设备、拆 J 行
+  rviz_joint_states.py 串口 → /joint_states
+  zero_offsets.py      用关节流重算零点
+  display.launch.py    robot_state_publisher + RViz + 桥
 test/       主机侧测试：cc app/dm_motor.c test/test_dm_motor.c -lm && ./a.out
             python3 test/xcheck.py  ← 与 Python 驱动逐字节对拍
 Src/ Inc/    CubeMX 生成（USER CODE 段可以手改，重新生成会保留）
