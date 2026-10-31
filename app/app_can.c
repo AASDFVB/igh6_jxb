@@ -9,6 +9,8 @@
  *    则全部落在 0x000，只能靠 D[0] 低半字节区分；两条路都兼容。
  */
 #include "app_can.h"
+#include <stdbool.h>
+
 #include "main.h"
 
 extern CAN_HandleTypeDef hcan1;
@@ -19,6 +21,12 @@ volatile uint32_t g_rx_unmatched;
 volatile uint32_t g_fifo_overruns;
 volatile uint32_t g_tx_dropped;
 volatile uint32_t g_busoff_recoveries;
+volatile uint32_t g_busoff_events;
+
+#define BUSOFF_RECOVER_INTERVAL_MS 500u
+static bool s_in_busoff[APP_BUS_COUNT];
+static uint32_t s_last_recover_ms[APP_BUS_COUNT];
+static uint32_t s_now_ms;   /* app_can_poll 传进来的时刻，给反馈打时间戳 */
 
 #define SLAVE_START_FILTER_BANK 14u
 
@@ -86,11 +94,16 @@ static void send_8(CAN_HandleTypeDef *h, uint8_t std_id, const uint8_t data[8])
     }
 }
 
-void app_can_send_hold(int i)
+void app_can_send_mit(int i, float p_des, float v_des, float kp, float kd, float t_ff)
 {
     uint8_t buf[8];
-    dm_encode_mit(buf, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    dm_encode_mit(buf, p_des, v_des, kp, kd, t_ff);
     send_8(bus_handle(APP_MOTORS[i].bus), APP_MOTORS[i].id, buf);
+}
+
+void app_can_send_hold(int i)
+{
+    app_can_send_mit(i, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
 }
 
 void app_can_send_special(int i, uint8_t cmd)
@@ -135,6 +148,7 @@ static void dispatch_feedback(uint8_t bus, const CAN_RxHeaderTypeDef *rx, const 
     dm_decode_feedback(data, &g_motors[idx].last);
     g_motors[idx].rx_frames++;
     g_motors[idx].rx_in_window++;
+    g_motors[idx].last_rx_ms = s_now_ms;
 }
 
 static void drain_fifo(CAN_HandleTypeDef *h, uint32_t fifo)
@@ -154,19 +168,32 @@ static void drain_fifo(CAN_HandleTypeDef *h, uint32_t fifo)
     }
 }
 
-void app_can_poll(void)
+void app_can_poll(uint32_t now_ms)
 {
+    s_now_ms = now_ms;
     /* 全部 CAN 收发都在主循环里做：HAL 的 GetRxMessage/AddTxMessage 都带
      * __HAL_LOCK，混在中断里会互相抢锁。轮询只要主循环比 1 ms 快，就不会丢。 */
     for (uint8_t b = 0; b < APP_BUS_COUNT; b++) {
         CAN_HandleTypeDef *h = bus_handle(b);
         drain_fifo(h, CAN_RX_FIFO0);
         drain_fifo(h, CAN_RX_FIFO1);
-        /* F4 HAL 没有 BUS_OFF 状态枚举，直接读 ESR 的 BOFF 位 */
+
+        /* F4 HAL 没有 BUS_OFF 状态枚举，直接读 ESR 的 BOFF 位。
+         * 总线上没有应答节点时它会反复进 bus-off，所以只统计"进入"次数，
+         * 且恢复动作限速到 500 ms 一次，不然主循环会把 CPU 全耗在重启上。 */
         if ((h->Instance->ESR & CAN_ESR_BOFF) != 0u) {
-            (void)HAL_CAN_Stop(h);
-            (void)HAL_CAN_Start(h);
-            g_busoff_recoveries++;
+            if (!s_in_busoff[b]) {
+                s_in_busoff[b] = true;
+                g_busoff_events++;
+            }
+            if (now_ms - s_last_recover_ms[b] >= BUSOFF_RECOVER_INTERVAL_MS) {
+                s_last_recover_ms[b] = now_ms;
+                g_busoff_recoveries++;
+                (void)HAL_CAN_Stop(h);
+                (void)HAL_CAN_Start(h);
+            }
+        } else {
+            s_in_busoff[b] = false;
         }
     }
 }
