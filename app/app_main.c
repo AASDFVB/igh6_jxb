@@ -24,6 +24,7 @@
 #include "app_can.h"
 #include "app_config.h"
 #include "app_led.h"
+#include "app_uart.h"
 #include "dm_motor.h"
 #include "gcomp_params.h"
 #include "gravity.h"
@@ -38,13 +39,21 @@ static bool s_banner_sent;
 /* ---- 上电回初始位 ---- */
 enum { HOME_WAIT = 0, HOME_MOVE, HOME_HOLD, HOME_OFF };
 static int s_home_state;
-static uint32_t s_home_t0;
+#if HOME_ENABLE
+static uint32_t s_home_t0;                   /* 只有自动回位用 */
 static float s_home_from[APP_MOTOR_COUNT];   /* 起步时的关节角 */
+#endif
 static float s_home_cmd[APP_MOTOR_COUNT];    /* 当前生效的目标（关节角，带限速） */
 static float s_target_req[APP_MOTOR_COUNT];  /* 上位机请求的目标（关节角） */
 static float s_kp = HOME_KP;                 /* 运行时可改的位置刚度 */
 static float s_kd = HOME_KD;
 static bool s_hold_enabled = HOME_HOLD_AFTER;
+static uint32_t s_uart_rx_bytes;      /* UART1 收到的字节数（累计，诊断用） */
+static uint32_t s_teleop_frames;      /* 接受的 P 帧数（累计） */
+static uint32_t s_teleop_last_ms;     /* 最近一条 P 帧的时间戳，0 = 从没收到过 */
+static uint32_t s_bin_bad;            /* 校验失败的二进制帧数 */
+static uint32_t s_rep_uart_bytes;     /* 上一秒报告时的快照，用来算每秒增量 */
+static uint32_t s_rep_teleop_frames;
 
 /* ---- 串口下行：环形缓冲 + 行缓冲 ---- */
 #define RX_RING 256u
@@ -71,6 +80,13 @@ static void tx_push(const char *s, int n)
     if (n <= 0) {
         return;
     }
+#if APP_TX_UART
+    /* UART1 和 USB CDC 是两个独立的接收方，必须各自独立投递：
+     * 没插 USB 时 CDC_Transmit_FS 会一直 BUSY，若先走 CDC 那套队列，被丢掉的
+     * 行走不到 UART——无线串口就会在上电 1 秒后彻底静默。
+     * 这里只入环队列，真正发送由主循环里的 app_uart_drain() 推进，绝不阻塞。 */
+    app_uart_put(s, (size_t)n);
+#endif
     if ((size_t)n > sizeof(s_tx) - s_tx_len) {
         return; /* 队列满就丢这一行，绝不覆盖未发完的数据 */
     }
@@ -123,6 +139,9 @@ void app_init(void)
 {
     app_can_init();
     app_led_init();
+#if APP_TX_UART
+    app_uart_init();
+#endif
     s_ms = 0;
     s_served_ms = 0;
     s_skipped_ticks = 0;
@@ -165,10 +184,57 @@ static int parse_floats(const char *s, float *out, int n)
     return 0;
 }
 
+/* 把角度折到 (-π, π]。关节角在模 2π 下等价，两臂 label 分支不同时
+ * 直接相减会多出整整一圈（实测 J1 会绕 360° 才到位）。 */
+static float wrap_pi(float a)
+{
+    const float two_pi = 6.28318530718f;
+    while (a > 3.14159265359f) {
+        a -= two_pi;
+    }
+    while (a <= -3.14159265359f) {
+        a += two_pi;
+    }
+    return a;
+}
+
+/* 接管 + 落目标。文本 P 命令和二进制帧共用这一段，避免两套逻辑漂移。 */
+static void teleop_apply(const float *q)
+{
+    /* 需要重新锁存当前姿态的两种情况：
+     *   1) 还没接管（等待中 / 已放弃 / 正在回零）
+     *   2) 上一轮遥操作已经超时释放（看门狗把 s_teleop_last_ms 清 0）
+     * 第 2 条是关键：否则重连后的第一帧会沿用上次会话留下的陈旧目标角，
+     * 一使能 kp 就朝旧姿势猛打——表现就是"一启动手臂自己动"。
+     * 锁存后由 HOLD 阶段的限速慢慢追过去，不会跳变。 */
+    /* 「上一帧太久了」也要算新会话：看门狗在放开状态下会提前 return，
+     * s_teleop_last_ms 不会被清 0，光判 ==0 会漏掉这条路径。 */
+    const bool gap = (s_teleop_last_ms == 0u) ||
+                     ((uint32_t)(s_ms - s_teleop_last_ms) > APP_TELEOP_TIMEOUT_MS);
+    if (s_home_state != HOME_HOLD || gap) {
+        float q_motor[APP_MOTOR_COUNT];
+        for (int i = 0; i < APP_MOTOR_COUNT; i++) {
+            q_motor[i] = g_motors[i].last.pos;
+        }
+        gravity_motor_to_joint(q_motor, s_home_cmd);
+        s_home_state = HOME_HOLD;
+    }
+    for (int i = 0; i < APP_MOTOR_COUNT; i++) {
+        s_target_req[i] = s_home_cmd[i] + wrap_pi(q[i] - s_home_cmd[i]);
+    }
+    /* 收到遥操作帧就自动打开位置保持（等价 M 1）。
+     * 不能指望上位机那条 M 1 一定活着：它只在启动时发一次，
+     * 而且看门狗在「上一轮帧已过期」时会立刻把 hold 清掉，
+     * 结果就是帧一直在收、臂却一动不动（实机踩过）。 */
+    s_hold_enabled = true;
+    s_teleop_last_ms = s_ms;   /* 喂遥测看门狗 */
+    s_teleop_frames++;
+}
+
 static void handle_command(char *line)
 {
     if (line[0] == 'P' && line[1] == ' ') {
-        /* P q0 q1 ... q5 —— 关节角目标（rad） */
+        /* P q0 q1 ... q5 —— 关节角目标（rad），调试用；高频走二进制帧 */
         float q[APP_MOTOR_COUNT];
         if (parse_floats(line + 2, q, APP_MOTOR_COUNT) != 0) {
             tx_pushf("ERR P parse\r\n");
@@ -180,18 +246,10 @@ static void handle_command(char *line)
                 return;
             }
         }
-        if (s_home_state != HOME_HOLD) {
-            /* 还没接管（等待中 / 已放弃 / 正在回零）：立刻从当前姿态接管，
-             * 交给 HOLD 阶段的限速去追新目标，避免插值中途改目标造成跳变。 */
-            float q_motor[APP_MOTOR_COUNT];
-            for (int i = 0; i < APP_MOTOR_COUNT; i++) {
-                q_motor[i] = g_motors[i].last.pos;
-            }
-            gravity_motor_to_joint(q_motor, s_home_cmd);
-            s_home_state = HOME_HOLD;
-        }
-        memcpy(s_target_req, q, sizeof(s_target_req));
+        teleop_apply(q);
+#if APP_TELEOP_ECHO
         tx_pushf("OK P\r\n");
+#endif
         return;
     }
     if (line[0] == 'M' && line[1] == ' ') {
@@ -225,10 +283,58 @@ static void handle_command(char *line)
     tx_pushf("ERR ?\r\n");
 }
 
-/* 主循环里反复调用：把收到的字节切成行，逐行执行 */
+/* 解码一帧二进制指令（调用方已确认校验和正确）：
+ *   0xAA | q0 q1 q2 q3 q4 q5（各 int16 小端，单位 mrad）| sum */
+static void apply_binary_frame(const uint8_t *f)
+{
+    float q[APP_MOTOR_COUNT];
+    for (int i = 0; i < APP_MOTOR_COUNT; i++) {
+        const uint32_t lo = 1u + 2u * (uint32_t)i;
+        const int16_t v = (int16_t)((uint16_t)f[lo] | ((uint16_t)f[lo + 1u] << 8));
+        q[i] = (float)v / 1000.0f;              /* mrad → rad */
+        if (q[i] < -APP_TELEOP_RANGE || q[i] > APP_TELEOP_RANGE) {
+            s_bin_bad++;
+            return;                             /* 越界整帧丢弃 */
+        }
+    }
+    teleop_apply(q);
+}
+
+/* 主循环里反复调用。一条流里混着两种东西：
+ *   - 文本行（M / K / P），以 \n 结尾
+ *   - 二进制帧，以 0xAA 开头、长度固定 APP_BIN_FRAME_LEN
+ * 0xAA 不是可打印 ASCII，所以两种格式不会互相误判。 */
 static void serial_poll(void)
 {
-    while (s_rx_tail != s_rx_head) {
+    for (;;) {
+        const uint16_t avail = (uint16_t)((s_rx_head + RX_RING - s_rx_tail) % RX_RING);
+        if (avail == 0u) {
+            return;
+        }
+
+        if (s_rx[s_rx_tail] == (uint8_t)APP_BIN_HEADER) {
+            if (avail < APP_BIN_FRAME_LEN) {
+                return;                         /* 帧还没到齐，下一拍再处理 */
+            }
+            uint8_t frame[APP_BIN_FRAME_LEN];
+            for (uint32_t i = 0; i < APP_BIN_FRAME_LEN; i++) {
+                frame[i] = s_rx[(uint16_t)((s_rx_tail + i) % RX_RING)];
+            }
+            uint8_t sum = 0;
+            for (uint32_t i = 0; i + 1u < APP_BIN_FRAME_LEN; i++) {
+                sum = (uint8_t)(sum + frame[i]);
+            }
+            if (sum == frame[APP_BIN_FRAME_LEN - 1u]) {
+                s_rx_tail = (uint16_t)((s_rx_tail + APP_BIN_FRAME_LEN) % RX_RING);
+                apply_binary_frame(frame);
+            } else {
+                /* 校验错（可能丢过字节）：只丢 1 个字节，靠下一个 0xAA 重新同步 */
+                s_rx_tail = (uint16_t)((s_rx_tail + 1u) % RX_RING);
+                s_bin_bad++;
+            }
+            continue;
+        }
+
         const char c = (char)s_rx[s_rx_tail];
         s_rx_tail = (uint16_t)((s_rx_tail + 1u) % RX_RING);
         if (c == '\n' || c == '\r') {
@@ -245,6 +351,7 @@ static void serial_poll(void)
     }
 }
 
+#if APP_LOG_LEVEL >= 1
 static int fsat_round(float x)
 {
     if (x >= 0.0f) {
@@ -252,6 +359,7 @@ static int fsat_round(float x)
     }
     return (int)(x - 0.5f);
 }
+#endif
 
 /* 六颗都回过「已使能」了吗 */
 static bool all_enabled(void)
@@ -335,18 +443,19 @@ static void gcomp_update(uint32_t now)
 /* 上电回初始位：等六轴就绪 → HOME_MOVE_MS 内平滑插值到 HOME_TARGET → 停在那儿 */
 static void home_update(uint32_t now)
 {
+    const bool ready = gcomp_ready(now);
+
 #if HOME_ENABLE
-    if (s_home_state == HOME_OFF) {
-        return;
-    }
-    if (!gcomp_ready(now)) {
+    /* ---- 开机自动回初始位：只有 HOME_ENABLE=1 才有这一段 ---- */
+    if (s_home_state != HOME_OFF) {
+      if (!ready) {
         /* 中途失效（掉使能/丢帧）就放弃回位，退回纯重力补偿，别硬顶 */
         if (s_home_state == HOME_MOVE || s_home_state == HOME_HOLD) {
             s_home_state = HOME_OFF;
         }
         return;
-    }
-    if (s_home_state == HOME_WAIT) {
+      }
+      if (s_home_state == HOME_WAIT) {
         if (now < HOME_DELAY_MS) {
             return;
         }
@@ -371,9 +480,14 @@ static void home_update(uint32_t now)
             s_home_state = HOME_HOLD;
         }
     }
-    if (s_home_state == HOME_HOLD) {
-        /* 保持阶段：目标可能被上位机改，按 APP_TELEOP_RAD_S 限速追过去，
-         * 避免一帧指令把目标拉太远（kp 会把大偏差变成一个大力矩）。 */
+    }   /* end if (s_home_state != HOME_OFF) */
+#endif /* HOME_ENABLE */
+
+    /* ---- 保持 / 遥操作限速：和「开机是否自动回位」无关，始终生效 ----
+     * 目标可能被上位机（UART1 镜像遥操作）改，按 APP_TELEOP_RAD_S 限速追过去，
+     * 避免一帧指令把目标拉太远（kp 会把大偏差变成一个大力矩）。
+     * 反馈不新鲜时先别动目标，等链路恢复——回位那条路径在 !ready 时已经 return。 */
+    if (s_home_state == HOME_HOLD && ready) {
         const float step = APP_TELEOP_RAD_S * 0.001f;   /* 每毫秒最多走这么多 rad */
         for (int i = 0; i < APP_MOTOR_COUNT; i++) {
             float d = s_target_req[i] - s_home_cmd[i];
@@ -386,12 +500,9 @@ static void home_update(uint32_t now)
             s_home_cmd[i] += d;
         }
     }
-#else
-    (void)now;
-#endif
 }
 
-#if APP_DEBUG_TORQUE
+#if APP_LOG_LEVEL >= 2
 /* G <ms> <t1..t6>：实际下发的力矩（mN·m），用来和 Pinocchio 对拍 */
 static void stream_torque(uint32_t ms)
 {
@@ -469,6 +580,7 @@ static void send_for_ms(uint32_t ms)
 }
 
 /* 错误码 → 中文名，串口直接可读 */
+#if APP_LOG_LEVEL >= 1
 static const char *err_cn(uint8_t e)
 {
     switch (e) {
@@ -484,6 +596,7 @@ static const char *err_cn(uint8_t e)
     default:  return "未知";
     }
 }
+#endif
 
 static void report(void)
 {
@@ -492,14 +605,22 @@ static void report(void)
         const uint32_t rx = app_can_close_window(i);
         tx_pushf("%s%lu", (i == 0) ? "" : "/", (unsigned long)rx);
     }
-    tx_pushf(" 溢出=%lu 未匹配=%lu 发送失败=%lu 总线关闭=%lu/%lu 丢拍=%lu\r\n",
+    tx_pushf(" 溢出=%lu 未匹配=%lu 发送失败=%lu 总线关闭=%lu/%lu 丢拍=%lu"
+             " UART收=%lu 遥测=%lu UART丢=%lu 坏帧=%lu\r\n",
              (unsigned long)g_fifo_overruns,
              (unsigned long)g_rx_unmatched,
              (unsigned long)g_tx_dropped,
              (unsigned long)g_busoff_events,
              (unsigned long)g_busoff_recoveries,
-             (unsigned long)s_skipped_ticks);
+             (unsigned long)s_skipped_ticks,
+             (unsigned long)(s_uart_rx_bytes - s_rep_uart_bytes),
+             (unsigned long)(s_teleop_frames - s_rep_teleop_frames),
+             (unsigned long)app_uart_rx_overruns(),
+             (unsigned long)s_bin_bad);
+    s_rep_uart_bytes = s_uart_rx_bytes;
+    s_rep_teleop_frames = s_teleop_frames;
 
+#if APP_LOG_LEVEL >= 1
     for (int i = 0; i < APP_MOTOR_COUNT; i++) {
         const dm_feedback_t *f = &g_motors[i].last;
         tx_pushf("[%u] 状态=%s 位置=%+dmrad 速度=%+dmrad/s 力矩=%+dmN·m 温度=%u/%u℃\r\n",
@@ -509,11 +630,13 @@ static void report(void)
                  fsat_round(f->tor * 1000.0f),
                  (unsigned)f->t_mos, (unsigned)f->t_rotor);
     }
+#endif /* APP_LOG_LEVEL >= 1 */
 }
 
 /* 机器可读的关节流，一行六个数，单位 mrad，顺序 = 电机 ID 1..6：
  *   J <t_ms> <p1> <p2> <p3> <p4> <p5> <p6>
  * 人工看的中文报告仍是 1 Hz，这行是给串口桥节点解析的。 */
+#if APP_LOG_LEVEL >= 3
 static void stream_joints(uint32_t ms)
 {
     char line[96];
@@ -533,11 +656,44 @@ static void stream_joints(uint32_t ms)
     line[n++] = '\n';
     tx_push(line, n);
 }
+#endif /* APP_LOG_LEVEL >= 3 */
+
+/* 遥测看门狗：上位机停发超过 APP_TELEOP_TIMEOUT_MS 就退回纯重力补偿（等价 M 0）。
+ * 只有在「收到过 P 帧且当前处于保持状态」时才武装，避免开机误触发。 */
+static void teleop_watchdog(uint32_t now)
+{
+#if APP_TELEOP_TIMEOUT_MS > 0
+    if (s_teleop_last_ms == 0u || !s_hold_enabled) {
+        return;
+    }
+    if (now - s_teleop_last_ms <= APP_TELEOP_TIMEOUT_MS) {
+        return;
+    }
+    s_hold_enabled = false;
+    if (s_home_state == HOME_MOVE) {
+        s_home_state = HOME_OFF;
+    }
+    /* 把目标角拉回当前姿态。否则下次上位机一发 M 1，kp 立刻作用在上次会话
+     * 留下的陈旧目标上，手臂会「自己」扑过去——在链路慢、首帧迟迟不到时尤其明显。 */
+    if (s_home_state == HOME_HOLD) {
+        float q_motor[APP_MOTOR_COUNT];
+        for (int i = 0; i < APP_MOTOR_COUNT; i++) {
+            q_motor[i] = g_motors[i].last.pos;
+        }
+        gravity_motor_to_joint(q_motor, s_home_cmd);
+        memcpy(s_target_req, s_home_cmd, sizeof(s_target_req));
+    }
+    s_teleop_last_ms = 0u;   /* 只报一次；再收到 P 帧才会重新武装 */
+    tx_pushf("遥测超时 %lu ms，已退回纯重力补偿（等价 M 0）\r\n",
+             (unsigned long)APP_TELEOP_TIMEOUT_MS);
+#endif
+}
 
 void app_loop(void)
 {
     const uint32_t now = s_ms;
     serial_poll();              /* 先收指令：一圈可能来好几条 */
+    teleop_watchdog(now);       /* 刚收到的帧会喂狗，超时才放开保持 */
     app_can_poll(now);
     app_can_poll_errors();
     app_led_update(now);
@@ -556,10 +712,12 @@ void app_loop(void)
         gcomp_update(now);          /* 先更新力矩，再发这一拍的 MIT 帧 */
         home_update(now);           /* 上电回初始位（未使能时不动） */
         send_for_ms(now);
+#if APP_LOG_LEVEL >= 3
         if (now % APP_STREAM_EVERY_MS == 0u) {
             stream_joints(now);
         }
-#if APP_DEBUG_TORQUE
+#endif
+#if APP_LOG_LEVEL >= 2
         if (now % APP_TORQUE_EVERY_MS == 0u) {
             stream_torque(now);
         }
@@ -570,4 +728,16 @@ void app_loop(void)
     }
 
     tx_drain();
+#if APP_TX_UART
+    {
+        /* UART1 收到的字节（镜像遥操作下行）喂给同一个行解析队列 */
+        uint8_t rxbuf[16];
+        const size_t rxn = app_uart_read(rxbuf, sizeof(rxbuf));
+        if (rxn > 0u) {
+            app_serial_input(rxbuf, (uint32_t)rxn);
+            s_uart_rx_bytes += (uint32_t)rxn;
+        }
+    }
+    app_uart_drain(); /* 每拍只填硬件 FIFO，不等待 */
+#endif
 }

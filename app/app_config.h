@@ -32,11 +32,31 @@ static const app_motor_cfg_t APP_MOTORS[APP_MOTOR_COUNT] = {
 #define APP_GCOMP_ENABLE 1
 #define APP_GCOMP_STALE_MS 100u      /* 任一轴反馈超过 100 ms 没更新 → 立刻零力矩 */
 /* gains / kp / kd / scale / limit / ramp / rate 都在 app/gcomp_params.h（手改）。 */
-#define APP_DEBUG_TORQUE 1           /* 10 Hz 打 G 行（力矩 mN·m），用于和 Pinocchio 对拍 */
-#define APP_TORQUE_EVERY_MS 100u
+/* ---- 串口日志音量（唯一旋钮，改这一个数就行）----
+ *   0 = 只打每秒那一行汇总（最安静）
+ *   1 = 汇总 + 6 行电机状态        ← 当前
+ *   2 = 再加 10 Hz 的 G 行（力矩 mN·m，和 Pinocchio 对拍用）
+ *   3 = 再加 50 Hz 的 J 行（关节流；RViz 同步 / zero_offsets.py 需要）
+ */
+#define APP_LOG_LEVEL 0
+#define APP_TORQUE_EVERY_MS 100u     /* G 行周期（仅 LEVEL>=2 生效） */
+
+/* ---- 调试串口（C 板 J30「UART1」= USART1：PA9=TX / PB7=RX）---- */
+#define APP_TX_UART 1                /* 1 = 除了 USB CDC，同样内容再从 UART1 打一份 */
+#define APP_UART_BAUD 115200u        /* 必须和无线模块的波特率一致 */
 
 /* ---- 串口下行（遥操作）---- */
-#define APP_TELEOP_RAD_S 1.5f        /* 目标角的最大变化速度 rad/s；0.8 太拖、3 以上开始发冲 */
+#define APP_TELEOP_RAD_S 2.5f        /* 目标角的最大变化速度 rad/s；镜像遥操作要跟手，1.5 偏拖 */
 #define APP_TELEOP_RANGE 7.0f        /* 单轴目标角允许范围 ±rad，超出直接拒绝 */
+#define APP_TELEOP_TIMEOUT_MS 300u   /* 上位机停发超过这么久 → 等价 M 0，退回纯重力补偿 */
+#define APP_TELEOP_ECHO 0            /* 1 = 每帧回 OK P（高频下会白吃掉上行带宽，默认关） */
+
+/* ---- 二进制度帧（镜像遥操作的高速通道）----
+ *   0xAA | q0(i16) q1(i16) ... q5(i16) | sum      = 14 字节
+ *   角度单位 mrad，小端；sum = 前 13 字节累加和的低 8 位。
+ *   0xAA 不在 ASCII 文本里出现，所以文本命令（M/K/P）和二进制帧可以混在一条流里。
+ *   14 字节/帧 在实测 ~680 B/s 的空口上能跑到 ~48 帧/秒，比文本的 42 字节快 3 倍。 */
+#define APP_BIN_HEADER 0xAAu
+#define APP_BIN_FRAME_LEN 14u
 
 #endif /* APP_CONFIG_H */

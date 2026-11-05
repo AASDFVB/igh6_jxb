@@ -36,6 +36,7 @@ BUILD_DIR = build
 ######################################
 # C sources
 C_SOURCES =  \
+app/app_uart.c \
 app/gravity.c \
 app/app_led.c \
 app/app_can.c \

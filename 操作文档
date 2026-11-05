@@ -1,4 +1,13 @@
 code ~/Desktop/igh6_jxb        # 终端
+
+保存版本
+
+cd ~/Desktop/igh6_jxb
+git add -A && git commit -m "改了什么"
+git push
+
+
+
 cd ~/Desktop/igh6_jxb
 make GCC_PATH=$HOME/.local/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin -j
 ~/.local/opt/xpack-openocd-0.12.0-7/bin/openocd -f interface/stlink.cfg -f target/stm32f4x.cfg -c "program build/igh6_jxb.elf verify reset exit"
@@ -51,3 +60,8 @@ bash tools/flash.sh
 # 2. 开 viser
 python3 host/viser_bridge.py
 # 浏览器打开 http://127.0.0.1:8081
+
+
+ cd ~/Desktop/igh6_jxb && bash tools/flash.sh
+cat /dev/ttyACM0
+

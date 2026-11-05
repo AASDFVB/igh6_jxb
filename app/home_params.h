@@ -12,7 +12,7 @@
 #define HOME_PARAMS_H
 
 
-#define HOME_ENABLE 1           /* 0 = 关掉，上电不自动回位 */
+#define HOME_ENABLE 0           /* 0 = 关掉，上电不自动回位 */
 #define HOME_DELAY_MS 3000u     /* 使能稳定后再等多久开始动 */
 #define HOME_MOVE_MS 15000u      /* 从当前姿态走到目标用多久（越大越慢越安全） */
 #define HOME_KP 3.0f           /* 移动/保持用的位置刚度 N·m/rad（6~40 比较温和） */
