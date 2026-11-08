@@ -556,12 +556,12 @@ static void send_for_ms(uint32_t ms)
                 float kp = GCOMP_ACTIVE[i] ? GCOMP_KP[i] : 0.0f;
                 float kd = GCOMP_ACTIVE[i] ? GCOMP_KD[i] : 0.0f;
                 if (s_home_state == HOME_MOVE) {
-                    p_des = GM_DIR[i] * (s_home_cmd[i] - GM_OFFSET[i]);
+                    p_des = GM_DIR[i] * ((s_home_cmd[i] - GM_OFFSET[i]) / GM_SCALE[i]);
                     kp = s_kp;
                     kd = s_kd;
                 } else if (s_home_state == HOME_HOLD) {
                     /* 保持/遥操作：M 0 放开（只剩重力补偿），M 1 钉住 */
-                    p_des = GM_DIR[i] * (s_home_cmd[i] - GM_OFFSET[i]);
+                    p_des = GM_DIR[i] * ((s_home_cmd[i] - GM_OFFSET[i]) / GM_SCALE[i]);
                     kp = s_hold_enabled ? s_kp : 0.0f;
                     kd = s_hold_enabled ? s_kd : 0.0f;
                 }

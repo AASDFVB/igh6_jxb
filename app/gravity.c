@@ -101,14 +101,14 @@ void gravity_torque(const float q[GM_JOINTS], float tau[GM_JOINTS])
 void gravity_motor_to_joint(const float q_motor[GM_JOINTS], float q_joint[GM_JOINTS])
 {
     for (int i = 0; i < GM_JOINTS; i++) {
-        q_joint[i] = GM_DIR[i] * q_motor[i] + GM_OFFSET[i];
+        q_joint[i] = GM_DIR[i] * (q_motor[i] * GM_SCALE[i]) + GM_OFFSET[i];
     }
 }
 
 void gravity_joint_to_motor(const float q_joint[GM_JOINTS], float q_motor[GM_JOINTS])
 {
     for (int i = 0; i < GM_JOINTS; i++) {
-        q_motor[i] = GM_DIR[i] * (q_joint[i] - GM_OFFSET[i]);
+        q_motor[i] = GM_DIR[i] * ((q_joint[i] - GM_OFFSET[i]) / GM_SCALE[i]);
     }
 }
 

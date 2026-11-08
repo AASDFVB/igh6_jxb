@@ -117,12 +117,16 @@ def load_cal(path: pathlib.Path):
     dirs = raw.get("directions") or {}
     offs = raw.get("offsets") or {}
     ids = raw.get("can_ids") or {}
+    # 关节角 = dir * (编码器角 * scale) + offset
+    # scale != 1 表示电机与关节之间有减速（例如 J0 实测 6:1 → scale = 1/6）
+    scales = raw.get("scales") or {}
     for j in JOINTS:
         if j not in offs or j not in dirs:
             raise SystemExit(f"{path} 缺 {j}")
     return ([int(ids.get(j, i + 1)) for i, j in enumerate(JOINTS)],
             [int(dirs[j]) for j in JOINTS],
-            [float(offs[j]) for j in JOINTS])
+            [float(offs[j]) for j in JOINTS],
+            [float(scales.get(j, 1.0)) for j in JOINTS])
 
 
 def fmt_val(x):
@@ -136,7 +140,7 @@ def fmt(v):
     return ", ".join(fmt_val(x) for x in np.ravel(v))
 
 
-def emit_model(chain, ids, dirs, offs, path: pathlib.Path, urdf: pathlib.Path):
+def emit_model(chain, ids, dirs, offs, scales, path: pathlib.Path, urdf: pathlib.Path):
     L = []
     L.append("/* 自动生成，别手改：tools/gen_gravity_model.py")
     L.append(" *   源 URDF: %s" % urdf)
@@ -166,6 +170,14 @@ def emit_model(chain, ids, dirs, offs, path: pathlib.Path, urdf: pathlib.Path):
              % ", ".join("%+d" % d for d in dirs))
     L.append("static const float GM_OFFSET[GM_JOINTS] = {%s};"
              % ", ".join("%.9gf" % o for o in offs))
+
+    def _f(x):
+        s = "%.9g" % x
+        return s + "f" if ("." in s or "e" in s or "E" in s) else s + ".0f"
+
+    L.append("/* 电机→关节减速比：q_joint = dir*(q_motor*GM_SCALE)+offset */")
+    L.append("static const float GM_SCALE[GM_JOINTS] = {%s};"
+             % ", ".join(_f(s) for s in scales))
     L.append("static const unsigned char GM_CAN_ID[GM_JOINTS] = {%s};"
              % ", ".join(str(i) for i in ids))
     L.append("")
@@ -225,7 +237,7 @@ def main() -> int:
         raise SystemExit(f"找不到 URDF: {urdf}")
 
     chain = load_chain(urdf)
-    ids, dirs, offs = load_cal(pathlib.Path(args.cal))
+    ids, dirs, offs, scales = load_cal(pathlib.Path(args.cal))
 
     _PIN["urdf"] = urdf
     try:
@@ -233,10 +245,10 @@ def main() -> int:
         print(f"对拍向量：40 组，与 Pinocchio 最大误差 {worst:.2e} N·m")
         if worst > 1e-9:
             raise SystemExit("❌ 算法与 Pinocchio 不一致，拒绝生成")
-        emit_model(chain, ids, dirs, offs, pathlib.Path(args.out), urdf)
+        emit_model(chain, ids, dirs, offs, scales, pathlib.Path(args.out), urdf)
     except ImportError:
         print("⚠️ 没装 pinocchio，跳过对拍（只生成模型）")
-        emit_model(chain, ids, dirs, offs, pathlib.Path(args.out), urdf)
+        emit_model(chain, ids, dirs, offs, scales, pathlib.Path(args.out), urdf)
 
     total = sum(c["mass"] for c in chain)
     print(f"模型：6 关节，总质量 {total:.2f} kg")

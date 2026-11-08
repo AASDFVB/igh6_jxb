@@ -50,7 +50,9 @@ static const float GM_MASS[GM_JOINTS] = {
 
 /* 标定：q_joint = dir * q_motor + offset（来自 host/joint_offsets.yaml）*/
 static const float GM_DIR[GM_JOINTS] = {+1, -1, +1, +1, +1, +1};
-static const float GM_OFFSET[GM_JOINTS] = {-5.244f, 0.1932f, -0.549f, -0.328f, -1.869f, -0.813f};
+static const float GM_OFFSET[GM_JOINTS] = {0.0459203f, 0.1932f, -0.549f, -0.328f, -1.869f, -0.813f};
+/* 电机→关节减速比：q_joint = dir*(q_motor*GM_SCALE)+offset */
+static const float GM_SCALE[GM_JOINTS] = {0.25f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
 static const unsigned char GM_CAN_ID[GM_JOINTS] = {1, 2, 3, 4, 5, 6};
 
 #endif /* GRAVITY_MODEL_H */
