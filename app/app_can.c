@@ -97,7 +97,8 @@ static void send_8(CAN_HandleTypeDef *h, uint8_t std_id, const uint8_t data[8])
 void app_can_send_mit(int i, float p_des, float v_des, float kp, float kd, float t_ff)
 {
     uint8_t buf[8];
-    dm_encode_mit(buf, p_des, v_des, kp, kd, t_ff);
+    const dm_range_t r = {APP_MOTORS[i].p_max, APP_MOTORS[i].v_max, APP_MOTORS[i].t_max};
+    dm_encode_mit_r(buf, p_des, v_des, kp, kd, t_ff, &r);
     send_8(bus_handle(APP_MOTORS[i].bus), APP_MOTORS[i].id, buf);
 }
 
@@ -145,7 +146,10 @@ static void dispatch_feedback(uint8_t bus, const CAN_RxHeaderTypeDef *rx, const 
         return;
     }
 
-    dm_decode_feedback(data, &g_motors[idx].last);
+    {
+        const dm_range_t r = {APP_MOTORS[idx].p_max, APP_MOTORS[idx].v_max, APP_MOTORS[idx].t_max};
+        dm_decode_feedback_r(data, &g_motors[idx].last, &r);
+    }
     g_motors[idx].rx_frames++;
     g_motors[idx].rx_in_window++;
     g_motors[idx].last_rx_ms = s_now_ms;

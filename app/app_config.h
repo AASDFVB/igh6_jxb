@@ -13,11 +13,20 @@
 typedef struct {
     uint8_t id;  /* 电机 ID = ESC_ID，命令帧寻址用 */
     uint8_t bus; /* 0 = CAN1, 1 = CAN2 */
+    /* 该型号的量程（不同型号不同，编码/解码必须用对，否则速度力矩差好几倍）
+     * DM4310 系列: 12.5 / 30 / 10
+     * DM-H3510 轮毂: 12.5 / 280 / 1   （减速比 1，极对 14） */
+    float p_max; /* rad */
+    float v_max; /* rad/s */
+    float t_max; /* N·m */
 } app_motor_cfg_t;
 
+#define DM4310_RANGE 12.5f, 30.0f, 10.0f
+#define DM_H3510_RANGE 12.5f, 280.0f, 1.0f
+
 static const app_motor_cfg_t APP_MOTORS[APP_MOTOR_COUNT] = {
-    {1, 0}, {2, 0}, {3, 0},
-    {4, 1}, {5, 1}, {6, 1},
+    {1, 0, DM4310_RANGE}, {2, 0, DM4310_RANGE}, {3, 0, DM4310_RANGE},
+    {4, 1, DM4310_RANGE}, {5, 1, DM4310_RANGE}, {6, 1, DM4310_RANGE},
 };
 
 #define APP_MASTER_ID(id) ((uint8_t)(0x10u + (uint8_t)(id)))
@@ -47,7 +56,7 @@ static const app_motor_cfg_t APP_MOTORS[APP_MOTOR_COUNT] = {
 
 /* ---- 串口下行（遥操作）---- */
 #define APP_TELEOP_RAD_S 2.5f        /* 目标角的最大变化速度 rad/s；镜像遥操作要跟手，1.5 偏拖 */
-#define APP_TELEOP_RANGE 7.0f        /* 单轴目标角允许范围 ±rad，超出直接拒绝 */
+#define APP_TELEOP_RANGE 3.1415927f  /* 单轴目标角允许范围 ±rad = ±180°，超出整帧拒绝 */
 #define APP_TELEOP_TIMEOUT_MS 300u   /* 上位机停发超过这么久 → 等价 M 0，退回纯重力补偿 */
 #define APP_TELEOP_ECHO 0            /* 1 = 每帧回 OK P（高频下会白吃掉上行带宽，默认关） */
 

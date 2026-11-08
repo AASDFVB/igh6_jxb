@@ -21,6 +21,9 @@
 #include <stdint.h>
 
 /* DM4310 缩放上限（手册与 SDK 一致；协议 V1.4 §4.2 的 ±45/±18 是通用示例） */
+/* 默认量程（DM4310 系列）。
+ * 不同型号量程不同（例如 DM-H3510 轮毂电机：12.5 / 280 / 1），
+ * 所以每台电机的量程放在 APP_MOTORS 表里，编码/解码时传进来。 */
 #define DM4310_P_MAX 12.5f
 #define DM4310_V_MAX 30.0f
 #define DM4310_T_MAX 10.0f
@@ -44,6 +47,19 @@ typedef struct {
 } dm_feedback_t;
 
 /* 把 MIT 五个浮点量编码成 8 字节命令帧。越界值先钳位再缩放。 */
+/* 一台电机的量程：pos 用 16 位，vel/tor 用 12 位 */
+typedef struct {
+    float p_max;   /* rad */
+    float v_max;   /* rad/s */
+    float t_max;   /* N·m */
+} dm_range_t;
+
+/* 按指定量程编码/解码（推荐，支持不同型号混用） */
+void dm_encode_mit_r(uint8_t out[8], float p_des, float v_des, float kp, float kd, float t_ff,
+                     const dm_range_t *r);
+void dm_decode_feedback_r(const uint8_t in[8], dm_feedback_t *fb, const dm_range_t *r);
+
+/* 兼容旧接口：用 DM4310 默认量程 */
 void dm_encode_mit(uint8_t out[8], float p_des, float v_des, float kp, float kd, float t_ff);
 
 /* 解析 8 字节反馈帧。非法帧（长度由调用方保证）无额外校验，err 原样带出。 */
