@@ -722,9 +722,13 @@ void app_loop(void)
             stream_torque(now);
         }
 #endif
+#if APP_LOG_LEVEL >= 1
+        /* LEVEL 0 时不发任何周期性日志：无线链路只有几百 B/s，
+         * 一行汇总就占 150 B/s，会把遥操作帧挤掉（实测遥测=0）。 */
         if (now % APP_REPORT_EVERY_MS == 0u) {
             report();
         }
+#endif
     }
 
     tx_drain();
