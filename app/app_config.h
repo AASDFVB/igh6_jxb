@@ -47,7 +47,7 @@ static const app_motor_cfg_t APP_MOTORS[APP_MOTOR_COUNT] = {
  *   2 = 再加 10 Hz 的 G 行（力矩 mN·m，和 Pinocchio 对拍用）
  *   3 = 再加 50 Hz 的 J 行（关节流；RViz 同步 / zero_offsets.py 需要）
  */
-#define APP_LOG_LEVEL 0
+#define APP_LOG_LEVEL 1
 #define APP_TORQUE_EVERY_MS 100u     /* G 行周期（仅 LEVEL>=2 生效） */
 
 /* ---- 调试串口（C 板 J30「UART1」= USART1：PA9=TX / PB7=RX）---- */
